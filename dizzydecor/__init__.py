@@ -181,7 +181,8 @@ def webservice(cls):
             await self.complete_request(path)
     for httpmethod in httpmethods:
         httpmethod = httpmethod.lower()
-        if getattr(cls, httpmethod, None) is None:
+        if(getattr(cls, httpmethod, RequestHandler._unimplemented_method) 
+                is RequestHandler._unimplemented_method):
             setattr(cls, httpmethod, handle_method)
     WSApplication.endpoints.append((path, cls))
     return cls
