@@ -173,6 +173,7 @@ def webservice(cls):
     servicename = _classname_to_path(cls.__name__)
     path = f"/{servicename}/(.+?)"
     httpmethods = cls.SUPPORTED_METHODS
+    unimplemented = (None, RequestHandler._unimplemented_method)
     if issubclass(cls, SyncWebserviceHandler):
         def handle_method(self, path):
             self.complete_request(path)
@@ -181,8 +182,7 @@ def webservice(cls):
             await self.complete_request(path)
     for httpmethod in httpmethods:
         httpmethod = httpmethod.lower()
-        if(getattr(cls, httpmethod, RequestHandler._unimplemented_method) 
-                is RequestHandler._unimplemented_method):
+        if(getattr(cls, httpmethod, None) in unimplemented):
             setattr(cls, httpmethod, handle_method)
     WSApplication.endpoints.append((path, cls))
     return cls

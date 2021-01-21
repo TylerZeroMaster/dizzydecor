@@ -5,7 +5,7 @@ with open("README.rst", "r") as fin:
 
 setuptools.setup(
     name="dizzydecor",
-    version="0.0.1",
+    version="0.0.3",
     author="Tyler Nullmeier",
     author_email="Tylerzeromaster@gmail.com",
     description="Web service decorators for tornado",
