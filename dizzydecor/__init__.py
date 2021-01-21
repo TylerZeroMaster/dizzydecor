@@ -164,30 +164,39 @@ class SyncWebserviceHandler(BaseWebserviceHandler):
         except ServiceArgumentError:
             self.send_error(400)
 
-def webservice(cls):
+def webservice(wspath=None):
     """This decorator includes a class in the ``WSApplication`` as a webservice.
 
     The webservice's path is derived from the class name. 
     - for example, MyWebService becomes /my-web-service. 
-    """
-    servicename = _classname_to_path(cls.__name__)
-    path = f"/{servicename}/(.+?)"
-    httpmethods = cls.SUPPORTED_METHODS
-    unimplemented = (None, RequestHandler._unimplemented_method)
-    if issubclass(cls, SyncWebserviceHandler):
-        def handle_method(self, path):
-            self.complete_request(path)
-    else:
-        async def handle_method(self, path):
-            await self.complete_request(path)
-    for httpmethod in httpmethods:
-        httpmethod = httpmethod.lower()
-        if(getattr(cls, httpmethod, None) in unimplemented):
-            setattr(cls, httpmethod, handle_method)
-    WSApplication.endpoints.append((path, cls))
-    return cls
+    """        """This decorator includes a class in the ``WSApplication`` as a webservice.
 
-def servicemethod(httpmethod="POST"):
+    The webservice's path is derived from the class name. 
+    - for example, MyWebService becomes /my-web-service. 
+    """
+    def decorating_function(cls):
+        print(wspath)
+        servicename = _classname_to_path(cls.__name__)
+        path = f"/{servicename}/(.*)" if wspath is None else wspath
+        httpmethods = cls.SUPPORTED_METHODS
+        unimplemented = (None, RequestHandler._unimplemented_method)
+        if issubclass(cls, SyncWebserviceHandler):
+            def handle_method(self, path):
+                self.complete_request(path)
+        else:
+            async def handle_method(self, path):
+                await self.complete_request(path)
+        for httpmethod in httpmethods:
+            httpmethod = httpmethod.lower()
+            if(getattr(cls, httpmethod, None) in unimplemented):
+                setattr(cls, httpmethod, handle_method)
+        WSApplication.endpoints.append((path, cls))
+        def wrapper(*args, **kwargs):
+            return cls(*args, **kwargs)
+        return update_wrapper(wrapper, cls)
+    return decorating_function
+
+def servicemethod(httpmethod="POST", path=None):
     """This decorator creates a service method from a ``BaseWebserviceHandler`` method. 
 
     The method's path is derived from its name. 
@@ -198,7 +207,7 @@ def servicemethod(httpmethod="POST"):
     def decorating_function(f):
         # get the class name from the function definition
         cls_name = f.__qualname__.split(".")[0]
-        methodname = f.__name__.replace("_", "-")
+        methodname = f.__name__.replace("_", "-") if path is None else path
         c = f.__code__
         # NOTE: This assumes that function arguments are first in co_varname 
         # and that "self" is the first argument. Self is skipped because it 
