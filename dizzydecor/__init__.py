@@ -15,11 +15,12 @@ class ServiceArgumentError(Exception):
         return repr("Service is missing one or more arguments")
 
 class Servicemethod(object):
-    __slots__ = ("method", "arg_list")
+    __slots__ = ("method", "arg_list", "ignore_body")
 
-    def __init__(self, method, arg_list):
+    def __init__(self, method, arg_list, ignore_body):
         self.method = method
         self.arg_list = arg_list
+        self.ignore_body = ignore_body
 
 class WSApplication(Application):
     """A webservice application. 
@@ -72,10 +73,22 @@ class BaseWebserviceHandler(RequestHandler):
 
     def prepare(self):
         """Parses query arguments for GET request, body arguments for other"""
-        if self.request.method == "GET":
-            self.args = self.read_query()
-        else:
-            self.args = self.read_body()
+        methodname, *path_args = self.path_args[0].split("/")
+        try:
+            servicemethod = self.get_servicemethod(methodname)
+            args = ({} if servicemethod.ignore_body 
+                else self.read_query() if self.request.method == "GET" 
+                else self.read_body())
+            if path_args:
+                args["path_args"] = path_args
+            self.validate_args(servicemethod, args)
+            self.methodname = methodname
+            self.servicemethod = servicemethod
+            self.args = args
+        except ServiceNotFoundError:
+            self.send_error(404)
+        except ServiceArgumentError:
+            self.send_error(400)
 
     def read_query(self):
         query = self.request.query
@@ -136,58 +149,51 @@ class WebserviceHandler(BaseWebserviceHandler):
     __doc__ = BaseWebserviceHandler.__doc__
 
     async def complete_request(self, path):
-        """Finds the requested service and conducts response preperation."""
-        try:
-            servicemethod = self.get_servicemethod(path)
-            self.validate_args(servicemethod, self.args)
-            response = await servicemethod.method(self, **self.args)
-            if not getattr(self, "finished", False):
-                self.write(response)
-        except ServiceNotFoundError:
-            self.send_error(404)
-        except ServiceArgumentError:
-            self.send_error(400)
+        """Conducts responses asynchronously."""
+        response = await self.servicemethod.method(self, **self.args)
+        if not getattr(self, "finished", False):
+            self.write(response)
 
 class SyncWebserviceHandler(BaseWebserviceHandler):
     __doc__ = BaseWebserviceHandler.__doc__
 
     def complete_request(self, path):
-        """Finds the requested service and conducts response preperation."""
-        try:
-            servicemethod = self.get_servicemethod(path)
-            self.validate_args(servicemethod, self.args)
-            response = servicemethod.method(self, **self.args)
-            if not getattr(self, "finished", False):
-                self.write(response)
-        except ServiceNotFoundError:
-            self.send_error(404)
-        except ServiceArgumentError:
-            self.send_error(400)
+        """Conducts responses synchronously."""
+        response = self.servicemethod.method(self, **self.args)
+        if not getattr(self, "finished", False):
+            self.write(response)
 
-def webservice(cls):
-    """This decorator includes a class in the ``WSApplication`` as a webservice.
+def webservice(path=None, **kwargs):
+    """This decorator adds a class into the ``WSApplication`` as a webservice.
 
     The webservice's path is derived from the class name. 
     - for example, MyWebService becomes /my-web-service. 
     """
-    servicename = _classname_to_path(cls.__name__)
-    path = f"/{servicename}/(.+?)"
-    httpmethods = cls.SUPPORTED_METHODS
-    unimplemented = (None, RequestHandler._unimplemented_method)
-    if issubclass(cls, SyncWebserviceHandler):
-        def handle_method(self, path):
-            self.complete_request(path)
-    else:
-        async def handle_method(self, path):
-            await self.complete_request(path)
-    for httpmethod in httpmethods:
-        httpmethod = httpmethod.lower()
-        if(getattr(cls, httpmethod, None) in unimplemented):
-            setattr(cls, httpmethod, handle_method)
-    WSApplication.endpoints.append((path, cls))
-    return cls
+    def decorating_function(cls):
+        servicename = _classname_to_path(cls.__name__)
+        wspath = (
+            f"/{servicename}/(.+)" if path is None 
+            else path.format(servicename=servicename)
+        )
+        httpmethods = cls.SUPPORTED_METHODS
+        unimplemented = (None, RequestHandler._unimplemented_method)
+        if issubclass(cls, SyncWebserviceHandler):
+            def handle_method(self, path):
+                self.complete_request(path)
+        else:
+            async def handle_method(self, path):
+                await self.complete_request(path)
+        for httpmethod in httpmethods:
+            httpmethod = httpmethod.lower()
+            if getattr(cls, httpmethod, None) in unimplemented:
+                setattr(cls, httpmethod, handle_method)
+        WSApplication.endpoints.append((wspath, cls, kwargs))
+        def wrapper(*args, **kwargs):
+            return cls(*args, **kwargs)
+        return update_wrapper(wrapper, cls)
+    return decorating_function
 
-def servicemethod(httpmethod="POST"):
+def servicemethod(httpmethod="POST", name=None, ignore_body=False):
     """This decorator creates a service method from a ``BaseWebserviceHandler`` method. 
 
     The method's path is derived from its name. 
@@ -198,7 +204,10 @@ def servicemethod(httpmethod="POST"):
     def decorating_function(f):
         # get the class name from the function definition
         cls_name = f.__qualname__.split(".")[0]
-        methodname = f.__name__.replace("_", "-")
+        methodname = f.__name__.replace("_", "-") if name is None else name
+        # TODO: Add more validation to ensure that custom names form valid urls
+        if "/" in methodname:
+            raise ValueError("Service names should not contain slashes")
         c = f.__code__
         # NOTE: This assumes that function arguments are first in co_varname 
         # and that "self" is the first argument. Self is skipped because it 
@@ -209,7 +218,7 @@ def servicemethod(httpmethod="POST"):
             cls_name, 
             httpmethod, 
             methodname, 
-            Servicemethod(f, arg_list)
+            Servicemethod(f, arg_list, ignore_body)
         )
         def wrapper(*args, **kwargs):
             return f(*args, **kwargs)
